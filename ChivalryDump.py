@@ -323,13 +323,18 @@ def GetFullServerInfo(sock, server_addr, server):
 serverQueue = Queue.Queue()
 completeQueue = Queue.Queue()
 t_locals = threading.local()
-
+g_port = 2000 # Start here (for no good reason)
 def GetSocket():
+	global g_port
 	s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 	s.settimeout(3.0)
 	while True:
+		with l_data:
+			g_port += 1
+			if g_port > 60000:
+				g_port = 2000
 		try:
-			s.bind( ('', 23000 + random.randint(1, 1000)) )
+			s.bind( ('', g_port ) )
 			break
 		except socket.error:
 			pass
@@ -364,6 +369,7 @@ def QueueWorker():
 		except Timeout:
 			with l_data:
 				g_serverTimeouts += 1
+			sock = GetSocket()
 		except Exception, e:
 			with l_stream:
 				print >> sys.stderr, ''
