@@ -334,12 +334,13 @@ def GetSocket():
 			if g_port > 60000:
 				g_port = 2000
 		try:
-			s.bind( ('', g_port ) )
+			thisBind = ('', g_port )
+			s.bind( thisBind )
 			break
 		except socket.error:
 			pass
 	t_locals.stream = []
-	t_locals.stream.append('Getting new socket')
+	t_locals.stream.append('Getting new socket: ' + str(thisBind))
 	return s
 
 def QueueWorker():
