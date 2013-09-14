@@ -20,6 +20,7 @@ l_data = threading.Lock()
 g_serverTimeouts = 0
 g_unsupportedServerProtocols = 0
 g_differentGames = 0
+g_malformedPackets = 0 
 
 NUM_THREADS = 5
 END_OF_LIST_IP = ( '0.0.0.0', 0 )
@@ -260,42 +261,59 @@ def AskMaster(sock, master_addr, region=0xFF, filter='\\gamedir\\chivalrymedieva
 def AskServerForChallenge(sock, server_addr, challengeType):
   '''Helper request. Required before asking for Rules or Players.
   Not sure why!'''
+  global g_malformedPackets
   if challengeType is None:
     request = STEAM_HEADER + 'W'
   else:
     request = STEAM_HEADER + challengeType + struct.pack('l', -1)
   t_locals.stream.append('S: {0}'.format(b16encode(request)))
   sock.sendto(request, server_addr)
-  try:
-    return ParseChallengeResponse(ReceiveServerPackets(sock))
-  except socket.timeout:
-    raise Timeout
+  while True:
+    try:
+      return ParseChallengeResponse(ReceiveServerPackets(sock))
+    except socket.timeout:
+      raise Timeout
+    except MalformedPacket:
+      with l_data:
+        g_malformedPackets += 1
 
 def AskServerForInfo(sock, server_addr):
+  global g_malformedPackets
   request = STEAM_HEADER + 'TSource Engine Query\x00'
   t_locals.stream.append('S: {0}'.format(b16encode(request)))
   sock.sendto(request, server_addr)
-  try:
-    # print 'Asking for info'
-    info = ParseInfoResponse(ReceiveServerPackets(sock))
-  except socket.timeout:
-    raise Timeout
-  return info
+  while True:
+    try:
+      # print 'Asking for info'
+      info = ParseInfoResponse(ReceiveServerPackets(sock))
+    except socket.timeout:
+      raise Timeout
+    except MalformedPacket:
+      with l_data:
+        g_malformedPackets += 1
+      continue 
+    return info
   
 def AskServerForRules(sock, server_addr):
+  global g_malformedPackets
   try:
     challenge = AskServerForChallenge(sock, server_addr, 'V')
   except Timeout:
     challenge = AskServerForChallenge(sock, server_addr, None)
   request = STEAM_HEADER + 'V' + struct.pack('l', challenge)
-  try:
-    #print 'Asking for rules'
-    t_locals.stream.append('S: {0}'.format(b16encode(request)))
-    sock.sendto(request, server_addr)
-    info = ParseRulesResponse(ReceiveServerPackets(sock))
-  except socket.timeout:
-    raise Timeout
-  return info
+  while True:
+    try:
+      #print 'Asking for rules'
+      t_locals.stream.append('S: {0}'.format(b16encode(request)))
+      sock.sendto(request, server_addr)
+      info = ParseRulesResponse(ReceiveServerPackets(sock))
+    except socket.timeout:
+      raise Timeout
+    except MalformedPacket:
+      with l_data:
+        g_malformedPackets += 1
+      continue
+    return info
   
 def AskServerForPlayers(sock, server_addr):
   try:
@@ -303,14 +321,19 @@ def AskServerForPlayers(sock, server_addr):
   except Timeout:
     challenge = AskServerForChallenge(sock, server_addr, None)
   request = STEAM_HEADER + 'U' + struct.pack('l', challenge)
-  try:
-    #print 'Asking for players'
-    t_locals.stream.append('S: {0}'.format(b16encode(request)))
-    sock.sendto(request, server_addr)
-    info = ParsePlayersResponse(ReceiveServerPackets(sock))
-  except socket.timeout:
-    raise Timeout
-  return info
+  while True:
+    try:
+      #print 'Asking for players'
+      t_locals.stream.append('S: {0}'.format(b16encode(request)))
+      sock.sendto(request, server_addr)
+      info = ParsePlayersResponse(ReceiveServerPackets(sock))
+    except socket.timeout:
+      raise Timeout
+    except MalformedPacket:
+      with l_data:
+        g_malformedPackets += 1
+      continue
+    return info
 
 def GetFullServerInfo(sock, server_addr, server):
   server['info'] = AskServerForInfo(sock, server_addr)
@@ -347,6 +370,7 @@ def QueueWorker():
   global g_serverTimeouts
   global g_unsupportedServerProtocols
   global g_differentGames
+  global g_malformedPackets
   while True:
     sock = GetSocket()
     try:
@@ -492,6 +516,7 @@ def Main():
   ErrorMsgDict['g_serverTimeouts'] = g_serverTimeouts
   ErrorMsgDict['g_unsupportedServerProtocols'] = g_unsupportedServerProtocols
   ErrorMsgDict['g_differentGames']=g_differentGames
+  ErrorMsgDict['g_malformedPackets']=g_malformedPackets
   PublishError(EncodeMessageForQueue(ErrorMsgDict), 'GLOBAL_VARS_REPORT','JSON')
   
 class Timeout(Exception):
