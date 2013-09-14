@@ -465,9 +465,9 @@ def Main():
       #print serverIp
       if (alreadyDone.has_key(serverIp)):
         repeatCount += 1
-         if repeatCount > 100:
-           break   
-         continue
+        if repeatCount > 100:
+          break   
+        continue
       alreadyDone[serverIp] = None
       
       serverQueue.put(serverIp)
