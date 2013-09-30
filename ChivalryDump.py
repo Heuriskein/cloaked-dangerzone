@@ -11,11 +11,37 @@ import bz2
 import datetime
 import json
 import pika
-
-from base64 import b16encode
+from boto.s3.connection import S3Connection, Location, Key
+from datetime import datetime
+from optparse import OptionParser
+from base64 import b16encode,b64encode
 
 l_stream = threading.Lock()
 l_data = threading.Lock()
+
+g_Game='chiv'  #file directory structure on AWS S3
+
+# ec2 instance from command line
+parser = OptionParser()
+
+parser.add_option("-i", "--id", dest="AWSAccessKeyId",
+                  help="The AWSAcessKeyId")
+
+parser.add_option("-k", "--key", dest="AWSSecretKey",
+                  help="The AWSSecretKey")
+
+parser.add_option("-r", "--rabbit", dest="rabbitHost",
+                  help="The rabbitHost")
+
+parser.add_option("-e", "--env", dest="env", default='dev',
+                  help="For naming S3 bucket data, defaults to dev, change to prod if you dare...")
+
+(options, args) = parser.parse_args()
+
+g_AWSAccessKeyId=options.AWSAccessKeyId
+g_AWSSecretKey=options.AWSSecretKey
+rabbitHost=options.rabbitHost 
+g_env=options.env
 
 g_serverTimeouts = 0
 g_unsupportedServerProtocols = 0
@@ -240,12 +266,22 @@ def AskMaster(sock, master_addr, region=0xFF, filter='\\gamedir\\chivalrymedieva
     sock.sendto(request, master_addr)
     replies = 0
     try:
-      for ip in ParseMasterResponse(sock.recvfrom(14000)):
+      if rabbitHost == 'localhost':
+        ip = ('127.0.0.1',7779)
         lastIp = ip
         replies += 1
+        lastIp = None
+       
         if (ip == END_OF_LIST_IP):
           return
         yield ip
+      else:
+        for ip in ParseMasterResponse(sock.recvfrom(14000)):
+          lastIp = ip
+          replies += 1
+          if (ip == END_OF_LIST_IP):
+            return
+          yield ip
     except socket.timeout:
       print >> sys.stderr, "Timed out talking to master {0} after {1} replies".format(master_addr, replies)
       break
@@ -404,6 +440,7 @@ def QueueWorker():
         print >> sys.stderr, ''
         
         ErrorDict = {}
+        ErrorDict['timestamp'] = FormatCurrentTime()
         ErrorDict['address'] = server_addr
         ErrorDict['t_locals'] = unicode(t_locals.stream)
         ErrorDict['error'] = [ '{0}:{1}'.format(type(e), e) ]
@@ -428,44 +465,52 @@ def EncodeMessageForQueue(UnEncodedMessage):
         return ''
        
 def PublishMessage(msg,HeaderType,MessageFormat): 
-    try:      
-        connection = pika.BlockingConnection(pika.ConnectionParameters(
-                 'ec2-54-212-43-81.us-west-2.compute.amazonaws.com', 5672))  
-        properties = pika.spec.BasicProperties(headers={
-            'type': HeaderType,
-             'format': MessageFormat,
-            'PublishTimestamp': FormatCurrentTime(),
-        })  
-        channel = connection.channel()    
-        channel.basic_publish(exchange='STEAMLOGS',
-                      routing_key='',
-                      properties=properties,
-                      body=bz2.compress(msg))
-        connection.close()      
-    except Exception, error:
-        print error      
-        print 'Error sending to Queue.  Check file for this one: ' + msg
+  connection = pika.BlockingConnection(pika.ConnectionParameters(
+          rabbitHost, 5672))  
+  properties = pika.spec.BasicProperties(headers={
+      'type': HeaderType,
+       'format': MessageFormat,
+      'PublishTimestamp': FormatCurrentTime(),
+  })  
+  channel = connection.channel()    
+  channel.basic_publish(exchange='STEAMLOGS',
+                routing_key='',
+                properties=properties,
+                body=bz2.compress(msg))
+  connection.close()      
+
+    
 
 
 def PublishError(msg,HeaderType,MessageFormat):
-    try: 
-        connection = pika.BlockingConnection(pika.ConnectionParameters(
-               'ec2-54-212-43-81.us-west-2.compute.amazonaws.com', 5672))
-        channel = connection.channel()
-        properties = pika.spec.BasicProperties(headers={
-            'type': HeaderType,
-             'format': MessageFormat,
-            'PublishTimestamp': FormatCurrentTime(),
-        }) 
-        channel.basic_publish(exchange='STEAMERROR',
-                      routing_key='',
-                      properties=properties,
-                      body=msg)   
-        connection.close()     
-    except Exception, error:  
-        print error 
-        print 'Error sending to Queue.  Check file for this one: ' + msg
 
+  connection = pika.BlockingConnection(pika.ConnectionParameters(
+         rabbitHost, 5672))
+  channel = connection.channel()
+  properties = pika.spec.BasicProperties(headers={
+      'type': HeaderType,
+       'format': MessageFormat,
+      'PublishTimestamp': FormatCurrentTime(),
+  }) 
+  channel.basic_publish(exchange='STEAMERROR',
+                routing_key='',
+                properties=properties,
+                body=msg)   
+  connection.close()     
+
+
+def WriteStringtoS3(string,game,msg_type): 
+  
+  env,game,msgtype =g_env, game, msg_type
+  today_YYYMMDD, today_hhmmss = datetime.now().strftime('%Y%m%d') , datetime.now().strftime('%H-%M-%S')    
+  S3_path =  env + '/data/' + game + '/' + msgtype + '/' +  today_YYYMMDD +  '/' +  today_hhmmss + '-logs.txt'
+  S3_bucket = 'dailydosegames-gamedata-' + g_AWSAccessKeyId.lower()
+  
+  conn = S3Connection(g_AWSAccessKeyId, g_AWSSecretKey)
+  bucket = conn.get_bucket(S3_bucket) 
+  k=Key(bucket)
+  k.key = S3_path  
+  k.set_contents_from_string(string,reduced_redundancy=True)  
     
 def Main():
   global g_startupFinished
@@ -497,10 +542,11 @@ def Main():
       serverQueue.put(serverIp)
   
   g_startupFinished = True
-  
+  serverStats_S3_String = ''
   while True:
     try:
       serverStats = completeQueue.get(False) , FormatCurrentTime()
+      serverStats_S3_String = EncodeMessageForQueue(serverStats) + '\n' + serverStats_S3_String
       PublishMessage(EncodeMessageForQueue(serverStats),'SERVER_STATS_COMPRESSED_JSON','COMPRESSED_JSON')
             
     except Queue.Empty:
@@ -518,6 +564,18 @@ def Main():
   ErrorMsgDict['g_differentGames']=g_differentGames
   ErrorMsgDict['g_malformedPackets']=g_malformedPackets
   PublishError(EncodeMessageForQueue(ErrorMsgDict), 'GLOBAL_VARS_REPORT','JSON')
+  
+  #convert the list of servers into a single string to write to AWS s3
+  #bucket/env/data/chiv/server-stats/YYYMMDD/hh:mm:ss-logs.txt 
+  #bucket/env/data/chiv/server-errors/YYYMMDD/hh:mm:ss-logs.txt
+
+  WriteStringtoS3(b64encode(bz2.compress(serverStats_S3_String)),g_Game,'server-logs')
+ 
+  S3_string=''
+  for line in ErrorMsgDict:
+    S3_string = S3_string + '\n' + line + ' : ' + str(ErrorMsgDict[line])
+    
+  WriteStringtoS3(S3_string,g_Game,'server-errors')
   
 class Timeout(Exception):
   pass
