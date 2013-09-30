@@ -1,5 +1,4 @@
 # \gamedir\chivalrymedievalwarfare
-
 import sys
 import socket
 import struct
@@ -19,7 +18,6 @@ from base64 import b16encode,b64encode
 l_stream = threading.Lock()
 l_data = threading.Lock()
 
-g_Game='chiv'  #file directory structure on AWS S3
 
 # ec2 instance from command line
 parser = OptionParser()
@@ -27,14 +25,14 @@ parser = OptionParser()
 parser.add_option("--id", dest="AWSAccessKeyId",
                   help="The AWSAcessKeyId")
 
-parser.add_option("--key", dest="AWSSecretKey",
+parser.add_option("--keyfilepath", dest="AWSSecretKeyFile",
                   help="The AWSSecretKey")
 
 parser.add_option("--rabbit", dest="rabbitHost",
                   help="The rabbitHost")
 
-parser.add_option("--env", dest="env", default='dev',
-                  help="For naming S3 bucket data, defaults to dev, change to prod if you dare...")
+parser.add_option("--gamename", dest="gamename", default='chiv',
+                  help="For naming S3 folders, defaults to chiv.")
 
 parser.add_option("--gamehostip", dest="gamehostip", default=None,
                   help="Host option for testing this on a specific Server.")
@@ -42,12 +40,21 @@ parser.add_option("--gamehostip", dest="gamehostip", default=None,
 parser.add_option("--gamehostport", dest="gamehostport", default=None,
                   help="Port option for testing this on a specific Server.")
 
+parser.add_option("--s3bucket", dest="s3bucket", default=None,
+                  help="TheS3Bucket you want to write data too.")
+
 (options, args) = parser.parse_args()
 
+
+g_S3BucketName = options.s3bucket
 g_AWSAccessKeyId=options.AWSAccessKeyId
-g_AWSSecretKey=options.AWSSecretKey
+
+fp = open(options.AWSSecretKeyFile,'rb')
+g_AWSSecretKey= fp.readline().strip('\n')
+fp.close()
+
 rabbitHost=options.rabbitHost 
-g_env=options.env
+g_Game=options.gamename
 g_GameHostIp= options.gamehostip
 g_GameHostPort = options.gamehostport
 
@@ -462,15 +469,6 @@ def QueueWorker():
       
     # Push whatever we ended up with into the queue anyway.
     completeQueue.put((server_addr, server), True, None)
-
-
-def EncodeMessageForQueue(UnEncodedMessage): 
-    try:
-        return json.dumps(UnEncodedMessage, ensure_ascii=False)
-    except Exception, e:    
-        print 'Could not encode message for JSON: ' + str(UnEncodedMessage) 
-        print e     
-        return ''
        
 def PublishMessage(msg,HeaderType,MessageFormat): 
     connection = pika.BlockingConnection(pika.ConnectionParameters(
@@ -509,12 +507,11 @@ def PublishError(msg,HeaderType,MessageFormat):
     connection.close()     
 
 
-def WriteStringtoS3(string,game,msg_type): 
+def WriteStringtoS3(string,game,msg_type, S3_bucket): 
   
-  env,game,msgtype =g_env, game, msg_type
+  game,msgtype = game, msg_type
   today_YYYMMDD, today_hhmmss = datetime.now().strftime('%Y%m%d') , datetime.now().strftime('%H-%M-%S')    
-  S3_path =  env + '/data/' + game + '/' + msgtype + '/' +  today_YYYMMDD +  '/' +  today_hhmmss + '-logs.txt'
-  S3_bucket = 'dailydosegames-gamedata-' + g_AWSAccessKeyId.lower()
+  S3_path =  '/data/' + game + '/' + msgtype + '/' +  today_YYYMMDD +  '/' +  today_hhmmss + '-logs.txt' 
   
   conn = S3Connection(g_AWSAccessKeyId, g_AWSSecretKey)
   bucket = conn.get_bucket(S3_bucket) 
@@ -556,8 +553,8 @@ def Main():
   while True:
     try:
       serverStats = completeQueue.get(False) , FormatCurrentTime()
-      serverStats_S3_String = EncodeMessageForQueue(serverStats) + '\n' + serverStats_S3_String
-      PublishMessage(EncodeMessageForQueue(serverStats),'SERVER_STATS_COMPRESSED_JSON','COMPRESSED_JSON')
+      serverStats_S3_String = json.dumps(serverStats, ensure_ascii=False) + '\n' + serverStats_S3_String
+      PublishMessage( json.dumps(serverStats, ensure_ascii=False) ,'SERVER_STATS_COMPRESSED_JSON','COMPRESSED_JSON')
             
     except Queue.Empty:
       if (len(threading.enumerate()) == 1):
@@ -573,19 +570,19 @@ def Main():
   ErrorMsgDict['g_unsupportedServerProtocols'] = g_unsupportedServerProtocols
   ErrorMsgDict['g_differentGames']=g_differentGames
   ErrorMsgDict['g_malformedPackets']=g_malformedPackets
-  PublishError(EncodeMessageForQueue(ErrorMsgDict), 'GLOBAL_VARS_REPORT','JSON')
+  PublishError( json.dumps(ErrorMsgDict, ensure_ascii=False), 'GLOBAL_VARS_REPORT','JSON')
   
   #convert the list of servers into a single string to write to AWS s3
   #bucket/env/data/chiv/server-stats/YYYMMDD/hh:mm:ss-logs.txt 
   #bucket/env/data/chiv/server-errors/YYYMMDD/hh:mm:ss-logs.txt
 
-  WriteStringtoS3(b64encode(bz2.compress(serverStats_S3_String)),g_Game,'server-logs')
+  WriteStringtoS3(b64encode(bz2.compress(serverStats_S3_String)),g_Game,'server-logs',g_S3BucketName)
  
   S3_string=''
   for line in ErrorMsgDict:
     S3_string = S3_string + '\n' + line + ' : ' + str(ErrorMsgDict[line])
     
-  WriteStringtoS3(S3_string,g_Game,'server-errors')
+  WriteStringtoS3(S3_string,g_Game,'server-errors',g_S3BucketName)
   
 class Timeout(Exception):
   pass
