@@ -24,17 +24,23 @@ g_Game='chiv'  #file directory structure on AWS S3
 # ec2 instance from command line
 parser = OptionParser()
 
-parser.add_option("-i", "--id", dest="AWSAccessKeyId",
+parser.add_option("--id", dest="AWSAccessKeyId",
                   help="The AWSAcessKeyId")
 
-parser.add_option("-k", "--key", dest="AWSSecretKey",
+parser.add_option("--key", dest="AWSSecretKey",
                   help="The AWSSecretKey")
 
-parser.add_option("-r", "--rabbit", dest="rabbitHost",
+parser.add_option("--rabbit", dest="rabbitHost",
                   help="The rabbitHost")
 
-parser.add_option("-e", "--env", dest="env", default='dev',
+parser.add_option("--env", dest="env", default='dev',
                   help="For naming S3 bucket data, defaults to dev, change to prod if you dare...")
+
+parser.add_option("--gamehostip", dest="gamehostip", default=None,
+                  help="Host option for testing this on a specific Server.")
+
+parser.add_option("--gamehostport", dest="gamehostport", default=None,
+                  help="Port option for testing this on a specific Server.")
 
 (options, args) = parser.parse_args()
 
@@ -42,6 +48,8 @@ g_AWSAccessKeyId=options.AWSAccessKeyId
 g_AWSSecretKey=options.AWSSecretKey
 rabbitHost=options.rabbitHost 
 g_env=options.env
+g_GameHostIp= options.gamehostip
+g_GameHostPort = options.gamehostport
 
 g_serverTimeouts = 0
 g_unsupportedServerProtocols = 0
@@ -266,8 +274,8 @@ def AskMaster(sock, master_addr, region=0xFF, filter='\\gamedir\\chivalrymedieva
     sock.sendto(request, master_addr)
     replies = 0
     try:
-      if rabbitHost == 'localhost':
-        ip = ('127.0.0.1',7779)
+      if g_GameHostIp != None:
+        ip = (g_GameHostIp,int(g_GameHostPort))
         lastIp = ip
         replies += 1
         lastIp = None
@@ -465,38 +473,40 @@ def EncodeMessageForQueue(UnEncodedMessage):
         return ''
        
 def PublishMessage(msg,HeaderType,MessageFormat): 
-  connection = pika.BlockingConnection(pika.ConnectionParameters(
-          rabbitHost, 5672))  
-  properties = pika.spec.BasicProperties(headers={
-      'type': HeaderType,
-       'format': MessageFormat,
-      'PublishTimestamp': FormatCurrentTime(),
-  })  
-  channel = connection.channel()    
-  channel.basic_publish(exchange='STEAMLOGS',
-                routing_key='',
-                properties=properties,
-                body=bz2.compress(msg))
-  connection.close()      
+    connection = pika.BlockingConnection(pika.ConnectionParameters(
+            rabbitHost, 5672))  
+    properties = pika.spec.BasicProperties(headers={
+                                                    'type': HeaderType,
+                                                     'format': MessageFormat,
+                                                    'PublishTimestamp': FormatCurrentTime(),
+                                                    }
+                                           )  
+    channel = connection.channel()    
+    channel.basic_publish(exchange='STEAMLOGS',
+                  routing_key='',
+                  properties=properties,
+                  body=bz2.compress(msg))
+    connection.close()      
 
     
 
 
 def PublishError(msg,HeaderType,MessageFormat):
-
-  connection = pika.BlockingConnection(pika.ConnectionParameters(
-         rabbitHost, 5672))
-  channel = connection.channel()
-  properties = pika.spec.BasicProperties(headers={
-      'type': HeaderType,
-       'format': MessageFormat,
-      'PublishTimestamp': FormatCurrentTime(),
-  }) 
-  channel.basic_publish(exchange='STEAMERROR',
-                routing_key='',
-                properties=properties,
-                body=msg)   
-  connection.close()     
+  
+    connection = pika.BlockingConnection(pika.ConnectionParameters(
+           rabbitHost, 5672))
+    channel = connection.channel()
+    properties = pika.spec.BasicProperties(headers={
+                                                    'type': HeaderType,
+                                                     'format': MessageFormat,
+                                                    'PublishTimestamp': FormatCurrentTime(),
+                                                    }
+                                           ) 
+    channel.basic_publish(exchange='STEAMERROR',
+                  routing_key='',
+                  properties=properties,
+                  body=msg)   
+    connection.close()     
 
 
 def WriteStringtoS3(string,game,msg_type): 
