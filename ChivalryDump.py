@@ -39,7 +39,7 @@ parser.add_option("--gamehostport", dest="gamehostport", default=None,
 parser.add_option("--s3bucket", dest="s3bucket", default=None,
                   help="TheS3Bucket you want to write data too.")
 
-parser.add_option("--local-port", dest='lPort', default=23000,
+parser.add_option("--local-port", dest='lPort', default=23000, type=int,
                   help="The local port to use when requesting data from master."
                   " Only needs to be set if you are running multiple scripts at"
                   " once")
@@ -50,9 +50,13 @@ parser.add_option("--local-port", dest='lPort', default=23000,
 g_S3BucketName = options.s3bucket
 g_AWSAccessKeyId=options.AWSAccessKeyId
 
-fp = open(options.AWSSecretKeyFile,'rb')
-g_AWSSecretKey= fp.readline().strip('\n')
-fp.close()
+print options.AWSSecretKeyFile
+if options.AWSSecretKeyFile is not None:
+  fp = open(options.AWSSecretKeyFile,'rb')
+  g_AWSSecretKey = fp.readline().strip('\n')
+  fp.close()
+else:
+  g_AWSSecretKey = None
 
 rabbitHost=options.rabbitHost 
 g_Game=options.gamename
@@ -527,9 +531,10 @@ def Main():
   #bucket/env/data/chiv/server-stats/YYYMMDD/hh:mm:ss-logs.txt 
   #bucket/env/data/chiv/server-errors/YYYMMDD/hh:mm:ss-logs.txt
 
-  s3_bucket = ChivDumpOutputMethods.GetS3Bucket(g_AWSAccessKeyId,g_AWSSecretKey,g_S3BucketName)
+  if (g_AWSAccessKeyId is not None and g_AWSSecretKey is not None):
+    s3_bucket = ChivDumpOutputMethods.GetS3Bucket(g_AWSAccessKeyId,g_AWSSecretKey,g_S3BucketName)
 
-  ChivDumpOutputMethods.WriteDataStringtoS3(b64encode(bz2.compress(serverStats_S3_String)),g_Game,'server-logs',s3_bucket)
+    ChivDumpOutputMethods.WriteDataStringtoS3(b64encode(bz2.compress(serverStats_S3_String)),g_Game,'server-logs',s3_bucket)
  
   S3_string=''
   for line in ErrorMsgDict:
