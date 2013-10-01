@@ -1,25 +1,19 @@
 # \gamedir\chivalrymedievalwarfare
-
 import sys
 import socket
 import struct
 import threading
 import Queue
 import random
-import time
 import bz2
-import datetime
 import json
-import pika
-from boto.s3.connection import S3Connection, Location, Key
-from datetime import datetime
+import ChivDumpOutputMethods 
 from optparse import OptionParser
 from base64 import b16encode,b64encode
 
 l_stream = threading.Lock()
 l_data = threading.Lock()
 
-g_Game='chiv'  #file directory structure on AWS S3
 
 # ec2 instance from command line
 parser = OptionParser()
@@ -27,14 +21,14 @@ parser = OptionParser()
 parser.add_option("--id", dest="AWSAccessKeyId",
                   help="The AWSAcessKeyId")
 
-parser.add_option("--key", dest="AWSSecretKey",
+parser.add_option("--keyfilepath", dest="AWSSecretKeyFile",
                   help="The AWSSecretKey")
 
 parser.add_option("--rabbit", dest="rabbitHost",
                   help="The rabbitHost")
 
-parser.add_option("--env", dest="env", default='dev',
-                  help="For naming S3 bucket data, defaults to dev, change to prod if you dare...")
+parser.add_option("--gamename", dest="gamename", default='chiv',
+                  help="For naming S3 folders, defaults to chiv.")
 
 parser.add_option("--gamehostip", dest="gamehostip", default=None,
                   help="Host option for testing this on a specific Server.")
@@ -42,12 +36,21 @@ parser.add_option("--gamehostip", dest="gamehostip", default=None,
 parser.add_option("--gamehostport", dest="gamehostport", default=None,
                   help="Port option for testing this on a specific Server.")
 
+parser.add_option("--s3bucket", dest="s3bucket", default=None,
+                  help="TheS3Bucket you want to write data too.")
+
 (options, args) = parser.parse_args()
 
+
+g_S3BucketName = options.s3bucket
 g_AWSAccessKeyId=options.AWSAccessKeyId
-g_AWSSecretKey=options.AWSSecretKey
+
+fp = open(options.AWSSecretKeyFile,'rb')
+g_AWSSecretKey= fp.readline().strip('\n')
+fp.close()
+
 rabbitHost=options.rabbitHost 
-g_env=options.env
+g_Game=options.gamename
 g_GameHostIp= options.gamehostip
 g_GameHostPort = options.gamehostport
 
@@ -86,9 +89,6 @@ masterList = [
   # ( '208.64.200.201'        , 27018 ),
   
 ]
-
-def FormatCurrentTime():
-  return time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
 
 def ExtractString(s):
   index = s.find('\0')
@@ -448,11 +448,11 @@ def QueueWorker():
         print >> sys.stderr, ''
         
         ErrorDict = {}
-        ErrorDict['timestamp'] = FormatCurrentTime()
+        ErrorDict['timestamp'] = ChivDumpOutputMethods.FormatCurrentTime()
         ErrorDict['address'] = server_addr
         ErrorDict['t_locals'] = unicode(t_locals.stream)
         ErrorDict['error'] = [ '{0}:{1}'.format(type(e), e) ]
-        PublishError(EncodeMessageForQueue(ErrorDict),'QUEUE_WORKER_ERROR', 'JSON')
+        PublishMessage(ErrorDict,g_rabbitChannel,'STEAMERROR','QUEUE_WORKER_ERROR', 'JSON')
     
     
     
@@ -462,70 +462,13 @@ def QueueWorker():
       
     # Push whatever we ended up with into the queue anyway.
     completeQueue.put((server_addr, server), True, None)
-
-
-def EncodeMessageForQueue(UnEncodedMessage): 
-    try:
-        return json.dumps(UnEncodedMessage, ensure_ascii=False)
-    except Exception, e:    
-        print 'Could not encode message for JSON: ' + str(UnEncodedMessage) 
-        print e     
-        return ''
        
-def PublishMessage(msg,HeaderType,MessageFormat): 
-    connection = pika.BlockingConnection(pika.ConnectionParameters(
-            rabbitHost, 5672))  
-    properties = pika.spec.BasicProperties(headers={
-                                                    'type': HeaderType,
-                                                     'format': MessageFormat,
-                                                    'PublishTimestamp': FormatCurrentTime(),
-                                                    }
-                                           )  
-    channel = connection.channel()    
-    channel.basic_publish(exchange='STEAMLOGS',
-                  routing_key='',
-                  properties=properties,
-                  body=bz2.compress(msg))
-    connection.close()      
-
-    
-
-
-def PublishError(msg,HeaderType,MessageFormat):
-  
-    connection = pika.BlockingConnection(pika.ConnectionParameters(
-           rabbitHost, 5672))
-    channel = connection.channel()
-    properties = pika.spec.BasicProperties(headers={
-                                                    'type': HeaderType,
-                                                     'format': MessageFormat,
-                                                    'PublishTimestamp': FormatCurrentTime(),
-                                                    }
-                                           ) 
-    channel.basic_publish(exchange='STEAMERROR',
-                  routing_key='',
-                  properties=properties,
-                  body=msg)   
-    connection.close()     
-
-
-def WriteStringtoS3(string,game,msg_type): 
-  
-  env,game,msgtype =g_env, game, msg_type
-  today_YYYMMDD, today_hhmmss = datetime.now().strftime('%Y%m%d') , datetime.now().strftime('%H-%M-%S')    
-  S3_path =  env + '/data/' + game + '/' + msgtype + '/' +  today_YYYMMDD +  '/' +  today_hhmmss + '-logs.txt'
-  S3_bucket = 'dailydosegames-gamedata-' + g_AWSAccessKeyId.lower()
-  
-  conn = S3Connection(g_AWSAccessKeyId, g_AWSSecretKey)
-  bucket = conn.get_bucket(S3_bucket) 
-  k=Key(bucket)
-  k.key = S3_path  
-  k.set_contents_from_string(string,reduced_redundancy=True)  
     
 def Main():
   global g_startupFinished
   g_startupFinished = False
-  
+  global g_rabbitChannel
+  g_rabbitChannel = ChivDumpOutputMethods.GetRabbitChannel(rabbitHost)
   threads = []
   for i in xrange(NUM_THREADS):
     t = threading.Thread(target=QueueWorker)
@@ -555,9 +498,9 @@ def Main():
   serverStats_S3_String = ''
   while True:
     try:
-      serverStats = completeQueue.get(False) , FormatCurrentTime()
-      serverStats_S3_String = EncodeMessageForQueue(serverStats) + '\n' + serverStats_S3_String
-      PublishMessage(EncodeMessageForQueue(serverStats),'SERVER_STATS_COMPRESSED_JSON','COMPRESSED_JSON')
+      serverStats = completeQueue.get(False) , ChivDumpOutputMethods.FormatCurrentTime()
+      serverStats_S3_String = json.dumps(serverStats, ensure_ascii=False) + '\n' + serverStats_S3_String
+      ChivDumpOutputMethods.PublishMessage(bz2.compress(json.dumps(serverStats, ensure_ascii=False)) , g_rabbitChannel,'STEAMLOGS','SERVER_STATS_COMPRESSED_JSON','COMPRESSED_JSON')
             
     except Queue.Empty:
       if (len(threading.enumerate()) == 1):
@@ -568,24 +511,27 @@ def Main():
   print >> sys.stderr, 'Total Different Games = '.rjust(40) + str(g_differentGames)
   print >> sys.stderr, ''
   ErrorMsgDict={}
-  ErrorMsgDict['timestamp']= FormatCurrentTime()
+  ErrorMsgDict['timestamp']= ChivDumpOutputMethods.FormatCurrentTime()
   ErrorMsgDict['g_serverTimeouts'] = g_serverTimeouts
   ErrorMsgDict['g_unsupportedServerProtocols'] = g_unsupportedServerProtocols
   ErrorMsgDict['g_differentGames']=g_differentGames
   ErrorMsgDict['g_malformedPackets']=g_malformedPackets
-  PublishError(EncodeMessageForQueue(ErrorMsgDict), 'GLOBAL_VARS_REPORT','JSON')
-  
+  ChivDumpOutputMethods.PublishMessage( json.dumps(ErrorMsgDict, ensure_ascii=False),g_rabbitChannel,'STEAMERROR', 'GLOBAL_VARS_REPORT','JSON')
+  ChivDumpOutputMethods.FinishedUsingRabbit()
   #convert the list of servers into a single string to write to AWS s3
   #bucket/env/data/chiv/server-stats/YYYMMDD/hh:mm:ss-logs.txt 
   #bucket/env/data/chiv/server-errors/YYYMMDD/hh:mm:ss-logs.txt
 
-  WriteStringtoS3(b64encode(bz2.compress(serverStats_S3_String)),g_Game,'server-logs')
+  s3_bucket = ChivDumpOutputMethods.GetS3Bucket(g_AWSAccessKeyId,g_AWSSecretKey,g_S3BucketName)
+
+  ChivDumpOutputMethods.WriteDataStringtoS3(b64encode(bz2.compress(serverStats_S3_String)),g_Game,'server-logs',s3_bucket)
  
   S3_string=''
   for line in ErrorMsgDict:
     S3_string = S3_string + '\n' + line + ' : ' + str(ErrorMsgDict[line])
     
-  WriteStringtoS3(S3_string,g_Game,'server-errors')
+  ChivDumpOutputMethods.WriteDataStringtoS3(S3_string,g_Game,'server-errors',s3_bucket)
+  ChivDumpOutputMethods.FinishedUsingS3()
   
 class Timeout(Exception):
   pass
