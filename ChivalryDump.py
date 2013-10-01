@@ -39,6 +39,11 @@ parser.add_option("--gamehostport", dest="gamehostport", default=None,
 parser.add_option("--s3bucket", dest="s3bucket", default=None,
                   help="TheS3Bucket you want to write data too.")
 
+parser.add_option("--local-port", dest='lPort', default=23000,
+                  help="The local port to use when requesting data from master."
+                  " Only needs to be set if you are running multiple scripts at"
+                  " once")
+
 (options, args) = parser.parse_args()
 
 
@@ -478,7 +483,7 @@ def Main():
     
   s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
   s.settimeout(3.0)
-  s.bind( ('', 23000) )
+  s.bind( ('', options.lPort) )
     
   alreadyDone = {}
   repeatCount = 0
