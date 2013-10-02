@@ -50,7 +50,6 @@ parser.add_option("--local-port", dest='lPort', default=23000, type=int,
 g_S3BucketName = options.s3bucket
 g_AWSAccessKeyId=options.AWSAccessKeyId
 
-print options.AWSSecretKeyFile
 if options.AWSSecretKeyFile is not None:
   fp = open(options.AWSSecretKeyFile,'rb')
   g_AWSSecretKey = fp.readline().strip('\n')
